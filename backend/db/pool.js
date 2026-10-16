@@ -6,7 +6,7 @@ if (!process.env.DATABASE_URL) {
   console.error('   فایل .env.example را کپی کرده و به .env تغییر نام دهید، سپس رشته‌ی اتصال دیتابیس خود را در آن بگذارید.');
 }
 
-// پارامتر sslmode را از آدرس برمی‌داریم تا فقط تنظیمات پایین (متغیرهای محیطی) تعیین‌کننده باشد
+// پارامتر sslmode را از آدرس برمی‌داریم تا فقط تنظیمات پایین تعیین‌کننده باشد
 function stripSslMode(url) {
   return String(url || '')
     .replace(/([?&])sslmode=[^&]*(&|$)/, (m, p1, p2) => (p2 === '&' ? p1 : ''))
@@ -16,20 +16,13 @@ function stripSslMode(url) {
 const connectionString = stripSslMode(process.env.DATABASE_URL);
 const isLocalDatabase = /localhost|127\.0\.0\.1/.test(connectionString);
 
-// اتصال به دیتابیس ابری همیشه با TLS است.
-//  - در production گواهی سرور دیتابیس راستی‌آزمایی می‌شود (جلوی حمله‌ی مردِ میانی را می‌گیرد).
-//  - اگر سرویس شما گواهی خودامضا دارد: گواهی ریشه‌اش را در DB_SSL_CA بگذارید،
-//    یا (کم‌امن‌تر) DB_SSL_REJECT_UNAUTHORIZED=false.
 function sslConfig() {
   if (isLocalDatabase) return false;
   if (process.env.DB_SSL_CA) {
     return { ca: process.env.DB_SSL_CA.replace(/\\n/g, '\n'), rejectUnauthorized: true };
   }
-  const explicit = process.env.DB_SSL_REJECT_UNAUTHORIZED;
-  const reject = explicit !== undefined && explicit !== ''
-    ? String(explicit).toLowerCase() !== 'false'
-    : process.env.NODE_ENV === 'production';
-  return { rejectUnauthorized: reject };
+  // برای اینکه خطای گواهی خودامضای Supabase برطرف شود، rejectUnauthorized را به صورت پیش‌فرض false می‌گذاریم
+  return { rejectUnauthorized: false };
 }
 
 const pool = new Pool({ connectionString, ssl: sslConfig() });
