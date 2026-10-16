@@ -9,6 +9,9 @@ function getTransporter() {
     }
     transporter = nodemailer.createTransport({
       service: 'gmail',
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000,
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_APP_PASSWORD,
@@ -16,6 +19,27 @@ function getTransporter() {
     });
   }
   return transporter;
+}
+
+
+// روی پلن رایگان Render پورت‌های SMTP (۲۵، ۴۶۵، ۵۸۷) بسته است و Gmail کار نمی‌کند.
+// اگر BREVO_API_KEY تنظیم باشد ایمیل از طریق API وب (HTTPS) فرستاده می‌شود؛ وگرنه همان SMTP قبلی.
+// فرستنده (EMAIL_FROM یا EMAIL_USER) باید در پنل Brevo به‌عنوان Sender تأیید شده باشد.
+async function sendViaBrevo({ to, subject, text, html }) {
+  const senderEmail = process.env.EMAIL_FROM || process.env.EMAIL_USER;
+  const recipients = String(to).split(',').map((e) => ({ email: e.trim() })).filter((r) => r.email);
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { 'api-key': process.env.BREVO_API_KEY, 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({ sender: { name: 'آنکت‌نویس', email: senderEmail }, to: recipients, subject, textContent: text, htmlContent: html }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`Brevo API ${res.status}: ${(await res.text()).slice(0, 300)}`);
+}
+
+async function deliver(mail) {
+  if (process.env.BREVO_API_KEY) return sendViaBrevo(mail);
+  return getTransporter().sendMail(mail);
 }
 
 async function sendOtpEmail(toEmail, code, purpose = 'login') {
@@ -36,7 +60,7 @@ async function sendOtpEmail(toEmail, code, purpose = 'login') {
     `,
   };
 
-  await getTransporter().sendMail(mailOptions);
+  await deliver(mailOptions);
 }
 
 function escapeHtml(value) {
@@ -64,7 +88,7 @@ async function sendPrintOrderEmail(toEmails, order, buyer) {
       </table>
     </div>`;
 
-  await getTransporter().sendMail({
+  await deliver({
     from: `"آنکت‌نویس" <${process.env.EMAIL_USER}>`,
     to: toEmails.join(','),
     subject: `سفارش چاپی جدید: ${order.item_title}`,

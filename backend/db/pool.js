@@ -18,11 +18,17 @@ const isLocalDatabase = /localhost|127\.0\.0\.1/.test(connectionString);
 
 function sslConfig() {
   if (isLocalDatabase) return false;
+  // بهترین حالت: گواهی ریشه‌ی دیتابیس (Supabase: Database > Settings > SSL Configuration) را در DB_SSL_CA بگذارید
   if (process.env.DB_SSL_CA) {
     return { ca: process.env.DB_SSL_CA.replace(/\\n/g, '\n'), rejectUnauthorized: true };
   }
-  // برای اینکه خطای گواهی خودامضای Supabase برطرف شود، rejectUnauthorized را به صورت پیش‌فرض false می‌گذاریم
-  return { rejectUnauthorized: false };
+  // اگر صریحاً true بگذارید، گواهی با CA های سیستم راستی‌آزمایی می‌شود.
+  // در غیر این صورت (برای رفع خطای self-signed در Supabase pooler) راستی‌آزمایی خاموش است؛ ارتباط رمزنگاری می‌شود ولی هویت سرور چک نمی‌شود.
+  const strict = String(process.env.DB_SSL_REJECT_UNAUTHORIZED || '').toLowerCase() === 'true';
+  if (!strict && process.env.NODE_ENV === 'production') {
+    console.warn('⚠️  اتصال دیتابیس بدون راستی‌آزمایی گواهی TLS است. برای امنیت بیشتر DB_SSL_CA را تنظیم کنید.');
+  }
+  return { rejectUnauthorized: strict };
 }
 
 const pool = new Pool({ connectionString, ssl: sslConfig() });

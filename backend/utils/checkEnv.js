@@ -40,8 +40,15 @@ function checkEnv() {
 
   const sameSite = String(process.env.COOKIE_SAMESITE || 'lax').toLowerCase();
   if (isProd) {
+    // دامنه‌هایی مثل onrender.com در فهرست Public Suffix هستند؛ دو زیردامنه‌ی آن‌ها «دو سایت جدا» حساب می‌شوند
+    const PUBLIC_SUFFIXES = ['onrender.com', 'vercel.app', 'netlify.app', 'pages.dev', 'github.io', 'herokuapp.com', 'up.railway.app', 'fly.dev', 'web.app', 'firebaseapp.com'];
     const site = (u) => {
-      try { return new URL(u).hostname.split('.').slice(-2).join('.'); } catch (_) { return ''; }
+      try {
+        const host = new URL(u).hostname;
+        const suffix = PUBLIC_SUFFIXES.find((s) => host === s || host.endsWith('.' + s));
+        if (suffix) return host.split('.').slice(-(suffix.split('.').length + 1)).join('.');
+        return host.split('.').slice(-2).join('.');
+      } catch (_) { return ''; }
     };
     const client = String(process.env.CLIENT_ORIGIN || '').split(',')[0].trim();
     if (site(client) && site(process.env.BACKEND_URL) && site(client) !== site(process.env.BACKEND_URL) && sameSite !== 'none') {
