@@ -7,8 +7,8 @@ const { upload, UPLOAD_DIR } = require('../middleware/upload');
 const serializeItem = require('../utils/serializeItem');
 const { userHasAccess } = require('../utils/access');
 const { createSignedPath, verifySigned } = require('../utils/signedUrl');
-const { isRealPdf, audioKind, AUDIO_MIME } = require('../utils/fileSignature');
-const streamFile = require('../utils/streamFile');
+const { isRealPdf, audioKind } = require('../utils/fileSignature');
+const storage = require('../utils/storage');
 
 const router = express.Router();
 
@@ -155,7 +155,7 @@ router.post('/', requireAuth, requireAuthor, async (req, res) => {
 });
 
 // POST /api/items/:id/files  → آپلود فایل PDF و/یا صوتی برای یک اثر (فقط برای صاحب اثر)
-router.post('/:id/files', requireAuth, async (req, res) => {
+router.post('/:id/files', requireAuth, requireAuthor, async (req, res) => {
   // اول مالکیت بررسی می‌شود، بعد فایل روی دیسک نوشته می‌شود (تا کاربر غیرمجاز نتواند دیسک را پر کند)
   let item;
   try {
@@ -199,18 +199,36 @@ router.post('/:id/files', requireAuth, async (req, res) => {
         return res.status(400).json({ error: 'فایل انتخاب‌شده یک فایل صوتی معتبر (MP3، WAV، OGG یا M4A) نیست.' });
       }
 
+      // نام نهایی فایل‌ها: همان نام تصادفی، با پسوند نوعِ واقعی فایل
+      const pdfStored = pdfFile ? `${path.parse(pdfFile.filename).name}.pdf` : null;
+      const audioStored = audioFile
+        ? `${path.parse(audioFile.filename).name}.${audioKind(path.join(UPLOAD_DIR, audioFile.filename))}`
+        : null;
+
+      // فایل‌ها اول در ذخیره‌گاه دائمی گذاشته می‌شوند؛ اگر یکی شکست بخورد، چیزی نیمه‌کاره نمی‌ماند
+      const persisted = [];
+      try {
+        if (pdfFile) { await storage.persist(pdfFile.filename, pdfStored); persisted.push(pdfStored); }
+        if (audioFile) { await storage.persist(audioFile.filename, audioStored); persisted.push(audioStored); }
+      } catch (storeErr) {
+        console.error('خطا در ذخیره‌ی فایل در ذخیره‌گاه:', storeErr.message);
+        await Promise.all(persisted.map((name) => storage.remove(name)));
+        discardUploaded();
+        return res.status(502).json({ error: 'ذخیره‌ی فایل ناموفق بود. دوباره تلاش کنید.' });
+      }
+
       const updateResult = await pool.query(
         `UPDATE items SET
            pdf_filename = COALESCE($1, pdf_filename),
            audio_filename = COALESCE($2, audio_filename)
          WHERE id = $3
          RETURNING *`,
-        [pdfFile ? pdfFile.filename : null, audioFile ? audioFile.filename : null, req.params.id]
+        [pdfStored, audioStored, req.params.id]
       );
 
       // فایل‌های قدیمی فقط بعد از ذخیره‌ی موفق فایل جدید حذف می‌شوند
-      if (pdfFile) deleteFileIfExists(item.pdf_filename);
-      if (audioFile) deleteFileIfExists(item.audio_filename);
+      if (pdfFile) storage.remove(item.pdf_filename);
+      if (audioFile) storage.remove(item.audio_filename);
 
       res.json({ item: serializeItem(updateResult.rows[0]) });
     } catch (err) {
@@ -255,13 +273,10 @@ router.get('/:id/stream/:kind', async (req, res) => {
     const filename = result.rows[0]?.filename;
     if (!filename) return res.status(404).json({ error: 'فایلی برای این اثر یافت نشد.' });
 
-    const filePath = path.join(UPLOAD_DIR, path.basename(filename));
     if (kind === 'pdf') {
-      return streamFile(req, res, filePath, { contentType: 'application/pdf', disposition: 'inline' });
+      return storage.stream(req, res, filename, { contentType: 'application/pdf', disposition: 'inline' });
     }
-    let mime = 'audio/mpeg';
-    try { mime = AUDIO_MIME[audioKind(filePath)] || mime; } catch (_) { /* فایل نیست؛ streamFile ۴۰۴ می‌دهد */ }
-    return streamFile(req, res, filePath, { contentType: mime });
+    return storage.stream(req, res, filename, { contentType: storage.contentTypeFor(filename, 'audio/mpeg') });
   } catch (err) {
     console.error('خطا در پخش فایل:', err);
     if (!res.headersSent) res.status(500).json({ error: 'مشکلی در سرور پیش آمد.' });
@@ -325,8 +340,8 @@ router.delete('/:id', requireAuth, async (req, res) => {
     // نظرات و امتیازهای این اثر خودکار همراهش حذف می‌شن (ON DELETE CASCADE)
     await pool.query('DELETE FROM items WHERE id = $1', [req.params.id]);
 
-    deleteFileIfExists(item.pdf_filename);
-    deleteFileIfExists(item.audio_filename);
+    storage.remove(item.pdf_filename);
+    storage.remove(item.audio_filename);
 
     res.json({ deleted: true });
   } catch (err) {

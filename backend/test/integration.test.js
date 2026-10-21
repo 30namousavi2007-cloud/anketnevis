@@ -35,7 +35,7 @@ const fakePool = {
   async query(sql, params = []) {
     const q = norm(sql);
     let m;
-    if (/^SELECT id, name, email, role, is_blocked FROM users WHERE id = \$1/.test(q)) {
+    if (/^SELECT id, name, email, role, is_blocked, password_changed_at FROM users WHERE id = \$1/.test(q)) {
       const u = users[params[0]];
       return { rows: u ? [u] : [], rowCount: u ? 1 : 0 };
     }
@@ -60,7 +60,7 @@ const fakePool = {
       const u = Object.values(users).find((x) => x.email === params[0]);
       return { rows: u ? [{ id: u.id, email_verified: u.email_verified !== false, otp_expires_at: u.otp_expires_at }] : [], rowCount: u ? 1 : 0 };
     }
-    if (/^INSERT INTO users \(name, email, password_hash, email_verified, otp_code, otp_expires_at, otp_attempts\)/.test(q)) {
+    if (/^INSERT INTO users \(name, email, password_hash, role, email_verified, otp_code, otp_expires_at, otp_attempts\)/.test(q)) {
       const id = 100 + Object.keys(users).length;
       users[id] = { id, name: params[0], email: params[1], password_hash: params[2], role: 'reader', is_blocked: false, email_verified: false, otp_code: params[3], otp_expires_at: params[4], otp_attempts: 0 };
       return { rows: [users[id]], rowCount: 1 };
@@ -71,6 +71,24 @@ const fakePool = {
     }
     if (/^UPDATE users SET otp_code = NULL, otp_expires_at = NULL WHERE id = \$1/.test(q)) {
       Object.assign(users[params[0]], { otp_code: null, otp_expires_at: null });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/^UPDATE users SET reset_code = \$1, reset_expires_at = \$2, reset_attempts = 0 WHERE id = \$3/.test(q)) {
+      Object.assign(users[params[2]], { reset_code: params[0], reset_expires_at: params[1], reset_attempts: 0 });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/^UPDATE users SET reset_attempts = reset_attempts \+ 1 WHERE id = \$1 RETURNING reset_attempts/.test(q)) {
+      users[params[0]].reset_attempts = (users[params[0]].reset_attempts || 0) + 1;
+      return { rows: [{ reset_attempts: users[params[0]].reset_attempts }], rowCount: 1 };
+    }
+    if (/^UPDATE users SET reset_code = NULL, reset_expires_at = NULL WHERE id = \$1/.test(q)) {
+      Object.assign(users[params[0]], { reset_code: null, reset_expires_at: null });
+      return { rows: [], rowCount: 1 };
+    }
+    if (/^UPDATE users SET password_hash = \$1, password_changed_at = now\(\), reset_code = NULL/.test(q) && /WHERE id = \$2 AND reset_code = \$3/.test(q)) {
+      const u = users[params[1]];
+      if (!u || u.reset_code !== params[2]) return { rows: [], rowCount: 0 };
+      Object.assign(u, { password_hash: params[0], password_changed_at: new Date(), reset_code: null, reset_expires_at: null, reset_attempts: 0, otp_code: null, otp_expires_at: null, otp_attempts: 0, email_verified: true });
       return { rows: [], rowCount: 1 };
     }
     if ((m = /^SELECT id, owner_id, price, (\w+) FROM items WHERE id = \$1/.exec(q)) || /^SELECT \* FROM items WHERE id = \$1/.test(q)) {
@@ -415,6 +433,12 @@ test('ثبت‌نام: با کد ایمیل تأیید می‌شود و بعد �
   assert.match(r.headers.get('set-cookie'), /^anketnevis_session=.*HttpOnly/);
   const user = Object.values(users).find((u) => u.email === 'fresh@x.ir');
   assert.strictEqual(user.email_verified, true);
+  assert.strictEqual((await r.json()).user.role, 'reader', 'کاربر جدید فقط خواننده است');
+  assert.strictEqual(user.role, 'reader');
+  // با نشست همین کاربر جدید نمی‌توان اثر منتشر کرد
+  const session = r.headers.get('set-cookie').split(';')[0];
+  const publish = await fetch(base + '/api/items', { method: 'POST', headers: { ...csrf, Cookie: session }, body: JSON.stringify({ title: 'اثر من', category: 'books' }) });
+  assert.strictEqual(publish.status, 403);
 });
 
 test('ثبت‌نام دوباره با ایمیل تأییدشده ۴۰۹ است', async () => {
@@ -448,4 +472,134 @@ test('ثبت‌نام: ورودی نامعتبر رد می‌شود', async () =
   assert.strictEqual((await register({ name: 'x', email: 'not-an-email', password: 'password123' })).status, 400);
   assert.strictEqual((await register({ name: '', email: 'a@x.ir', password: 'password123' })).status, 400);
   assert.strictEqual((await register({ name: 'x', email: 'a@x.ir', password: 123456789 })).status, 400);
+});
+
+// ======================= فقط نویسنده‌ها منتشر می‌کنند =======================
+test('خواننده نمی‌تواند اثر بسازد یا فایل آپلود کند (حتی صاحب قدیمی اثری که دیگر نویسنده نیست)', async () => {
+  const create = await fetch(base + '/api/items', { method: 'POST', headers: { ...csrf, Cookie: cookieFor(2) }, body: JSON.stringify({ title: 'اثر', category: 'books' }) });
+  assert.strictEqual(create.status, 403);
+
+  users[6] = { id: 6, name: 'نویسنده‌ی تنزل‌یافته', email: 'demoted@x.ir', role: 'reader', is_blocked: false };
+  items[12] = { id: 12, owner_id: 6, title: 'اثر قدیمی', price: 0, pdf_filename: null, audio_filename: null };
+  const filesBefore = fs.readdirSync(UPLOAD_DIR).sort();
+  const up = await fetch(base + '/api/items/12/files', { method: 'POST', headers: { 'X-Requested-With': 'anketnevis', Cookie: cookieFor(6) }, body: pdfForm('%PDF-1.4 x') });
+  assert.strictEqual(up.status, 403);
+  assert.deepStrictEqual(fs.readdirSync(UPLOAD_DIR).sort(), filesBefore, 'هیچ فایلی نباید نوشته شود');
+});
+
+// ======================= فراموشی رمز عبور =======================
+const forgot = (email) => fetch(base + '/api/auth/forgot-password', { method: 'POST', headers: csrf, body: JSON.stringify({ email }) });
+const reset = (email, code, newPassword) => fetch(base + '/api/auth/reset-password', { method: 'POST', headers: csrf, body: JSON.stringify({ email, code, newPassword }) });
+const lastMailTo = (email) => [...sentMails].reverse().find((m) => m.to === email);
+
+test('فراموشی رمز: برای ایمیل ناشناس همان پاسخ موفق، بدون ارسال ایمیل', async () => {
+  const before = sentMails.length;
+  const r = await forgot('ghost@x.ir');
+  assert.strictEqual(r.status, 200);
+  assert.deepStrictEqual(await r.json(), { sent: true });
+  assert.strictEqual(sentMails.length, before);
+});
+
+test('فراموشی رمز: کد بازیابی هش ذخیره می‌شود و تا ۶۰ ثانیه دوباره ارسال نمی‌شود', async () => {
+  const before = sentMails.length;
+  assert.strictEqual((await forgot('buyer@x.ir')).status, 200);
+  const mail = lastMailTo('buyer@x.ir');
+  assert.strictEqual(sentMails.length, before + 1);
+  assert.strictEqual(mail.purpose, 'reset');
+  assert.match(mail.code, /^\d{6}$/);
+  assert.ok(users[2].reset_code && users[2].reset_code !== mail.code);
+  assert.strictEqual((await forgot('buyer@x.ir')).status, 200);
+  assert.strictEqual(sentMails.length, before + 1, 'درخواست پشت‌سرهم ایمیل جدید نمی‌فرستد');
+});
+
+test('کد بازیابی و کد ورود قابل جایگزینی با هم نیستند', async () => {
+  // کد بازیابی برای ورود (verify-otp) کار نمی‌کند
+  const mail = lastMailTo('buyer@x.ir');
+  const asLogin = await fetch(base + '/api/auth/verify-otp', { method: 'POST', headers: csrf, body: JSON.stringify({ email: 'buyer@x.ir', code: mail.code }) });
+  assert.strictEqual(asLogin.status, 400);
+  // کد ورود برای تغییر رمز کار نمی‌کند
+  Object.assign(users[3], { otp_code: hashOtp('111111'), otp_expires_at: new Date(Date.now() + 60000), reset_code: null, reset_expires_at: null });
+  const asReset = await reset('other@x.ir', '111111', 'brandnewpass1');
+  assert.strictEqual(asReset.status, 400);
+  assert.strictEqual(users[3].password_hash, undefined, 'رمز عوض نشده');
+});
+
+test('بازیابی رمز: بعد از ۵ حدس اشتباه حتی کد درست هم باطل است', async () => {
+  assert.strictEqual((await forgot('other@x.ir')).status, 200);
+  const mail = lastMailTo('other@x.ir');
+  for (let i = 0; i < 5; i += 1) assert.strictEqual((await reset('other@x.ir', '000000', 'brandnewpass1')).status, 400);
+  assert.strictEqual((await reset('other@x.ir', mail.code, 'brandnewpass1')).status, 429);
+  assert.strictEqual(users[3].reset_code, null);
+});
+
+test('بازیابی رمز موفق: رمز عوض می‌شود، نشست‌های قدیمی باطل می‌شوند و کد دوباره قابل استفاده نیست', async () => {
+  const oldSession = `anketnevis_session=${jwt.sign({ userId: 3, iat: Math.floor(Date.now() / 1000) - 100 }, process.env.JWT_SECRET, { algorithm: 'HS256', expiresIn: '1h' })}`;
+  assert.strictEqual((await fetch(base + '/api/auth/me', { headers: { Cookie: oldSession } })).status, 200, 'قبل از بازیابی معتبر است');
+
+  assert.strictEqual((await forgot('other@x.ir')).status, 200);
+  const mail = lastMailTo('other@x.ir');
+
+  const weak = await reset('other@x.ir', mail.code, 'short');
+  assert.strictEqual(weak.status, 400, 'رمز کوتاه رد می‌شود');
+
+  const ok = await reset('other@x.ir', mail.code, 'brandnewpass1');
+  assert.strictEqual(ok.status, 200);
+  assert.match(ok.headers.get('set-cookie'), /Max-Age=0/);
+  const bcrypt = require('bcryptjs');
+  assert.ok(await bcrypt.compare('brandnewpass1', users[3].password_hash), 'رمز جدید هش شده ذخیره شود');
+  assert.strictEqual(users[3].reset_code, null);
+  assert.strictEqual(users[3].email_verified, true);
+  assert.ok(users[3].password_changed_at);
+
+  assert.strictEqual((await fetch(base + '/api/auth/me', { headers: { Cookie: oldSession } })).status, 401, 'نشست قدیمی باید باطل شود');
+  const freshSession = `anketnevis_session=${jwt.sign({ userId: 3, iat: Math.floor(Date.now() / 1000) + 2 }, process.env.JWT_SECRET, { algorithm: 'HS256', expiresIn: '1h' })}`;
+  assert.strictEqual((await fetch(base + '/api/auth/me', { headers: { Cookie: freshSession } })).status, 200, 'نشست تازه معتبر است');
+
+  assert.strictEqual((await reset('other@x.ir', mail.code, 'anotherpass12')).status, 400, 'کد یک‌بار مصرف است');
+});
+
+// ======================= حالت Supabase Storage (مسیر واقعی روی Render رایگان) =======================
+test('حالت Supabase: آپلود در Storage، حذف فایل قبلی و پخش از Storage با لینک امضاشده', async () => {
+  process.env.SUPABASE_URL = 'https://proj.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-key';
+  process.env.SUPABASE_BUCKET = 'books';
+  const realFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url, opts = {}) => {
+    if (String(url).startsWith(base)) return realFetch(url, opts);
+    calls.push({ url: String(url), method: opts.method || 'GET' });
+    if (opts.method === 'POST' || opts.method === 'DELETE') return { ok: true, status: 200 };
+    const body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('%PDF-remote')); c.close(); } });
+    return { ok: true, status: 200, body, headers: new Headers({ 'content-length': '11' }) };
+  };
+  try {
+    const before = items[11].pdf_filename;
+    const r = await fetch(base + '/api/items/11/files', { method: 'POST', headers: { 'X-Requested-With': 'anketnevis', Cookie: cookieFor(1) }, body: pdfForm('%PDF-1.4 supabase-mode') });
+    assert.strictEqual(r.status, 200);
+
+    const uploadCall = calls.find((c) => c.method === 'POST');
+    assert.match(uploadCall.url, /\/storage\/v1\/object\/books\/[0-9a-f]{32}\.pdf$/);
+    assert.ok(items[11].pdf_filename.endsWith('.pdf') && items[11].pdf_filename !== before);
+    assert.ok(uploadCall.url.endsWith(items[11].pdf_filename), 'نام ذخیره‌شده در دیتابیس همان نام داخل Storage است');
+    assert.ok(calls.some((c) => c.method === 'DELETE' && c.url.endsWith(`/${before}`)), 'فایل قبلی از Storage حذف شود');
+    assert.ok(!fs.existsSync(path.join(UPLOAD_DIR, items[11].pdf_filename)), 'فایل موقت روی دیسک نماند');
+
+    const link = await get('/api/items/11/file-url/pdf', 1);
+    assert.strictEqual(link.status, 200);
+    const file = await fetch(base + (await link.json()).url);
+    assert.strictEqual(file.status, 200);
+    assert.strictEqual(file.headers.get('content-type'), 'application/pdf');
+    assert.strictEqual(await file.text(), '%PDF-remote');
+    assert.ok(calls.some((c) => c.method === 'GET' && c.url.includes('/storage/v1/object/authenticated/books/')));
+
+    // لینک بدون امضا حتی در حالت Supabase هیچ تماسی با Storage نمی‌گیرد
+    const callsBefore = calls.length;
+    assert.strictEqual((await get('/api/items/11/stream/pdf')).status, 403);
+    assert.strictEqual(calls.length, callsBefore);
+  } finally {
+    global.fetch = realFetch;
+    delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    delete process.env.SUPABASE_BUCKET;
+  }
 });

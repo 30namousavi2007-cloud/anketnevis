@@ -1,5 +1,26 @@
-// بررسی تنظیمات هنگام اجرا. در حالت production اگر تنظیمات ناامن یا ناقص باشد، سرور بالا نمی‌آید
+// بررسی تنظیمات هنگام اجرا. در حالت production اگر تنظیمات ناامن باشد، سرور بالا نمی‌آید
 // تا اشتباهی با کلید آزمایشی یا آدرس localhost پول واقعی دریافت نشود.
+
+// دامنه‌های «ثبت‌عمومی» که هر زیردامنه‌شان یک سایت جداست (فهرست Public Suffix). کوکی بین این زیردامنه‌ها رد و بدل نمی‌شود.
+const SHARED_SUFFIXES = [
+  'onrender.com', 'vercel.app', 'netlify.app', 'pages.dev', 'workers.dev', 'herokuapp.com',
+  'github.io', 'gitlab.io', 'fly.dev', 'railway.app', 'up.railway.app', 'web.app', 'firebaseapp.com',
+  'azurewebsites.net', 'surge.sh', 'glitch.me', 'repl.co', 'ngrok.io', 'ngrok-free.app',
+];
+const SECOND_LEVEL_IR = ['co.ir', 'ac.ir', 'org.ir', 'gov.ir', 'sch.ir', 'net.ir', 'id.ir'];
+
+// «سایت» (registrable domain) یک آدرس؛ دو آدرس با سایت یکسان می‌توانند کوکی را به‌صورت first-party رد و بدل کنند
+function registrableDomain(urlOrHost) {
+  let host = '';
+  try { host = new URL(urlOrHost).hostname; } catch (_) { host = String(urlOrHost || ''); }
+  host = host.toLowerCase();
+  const labels = host.split('.');
+  const shared = SHARED_SUFFIXES.find((s) => host === s || host.endsWith(`.${s}`));
+  if (shared) return labels.slice(-(shared.split('.').length + 1)).join('.');
+  if (SECOND_LEVEL_IR.some((s) => host.endsWith(`.${s}`))) return labels.slice(-3).join('.');
+  return labels.slice(-2).join('.');
+}
+
 function checkEnv() {
   const isProd = process.env.NODE_ENV === 'production';
   const errors = [];
@@ -30,7 +51,22 @@ function checkEnv() {
       errors.push('CLIENT_ORIGIN باید آدرس عمومی فرانت‌اند با https باشد.');
     }
     if (sandbox) warnings.push('ZARINPAL_SANDBOX=true است؛ پرداخت‌ها آزمایشی‌اند و پول واقعی جابه‌جا نمی‌شود.');
-    if (!process.env.UPLOAD_DIR) warnings.push('UPLOAD_DIR تنظیم نشده؛ اگر دیسک سرور دائمی نیست، فایل‌های آپلودشده با هر دیپلوی پاک می‌شوند.');
+
+    const hasSupabaseStorage = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!hasSupabaseStorage && !process.env.UPLOAD_DIR) {
+      warnings.push('نه Supabase Storage (SUPABASE_URL و SUPABASE_SERVICE_ROLE_KEY) تنظیم شده نه UPLOAD_DIR؛ فایل‌های آپلودشده با هر deploy یا راه‌اندازی دوباره‌ی سرور پاک می‌شوند.');
+    }
+
+    const brevoReady = process.env.BREVO_API_KEY && process.env.MAIL_FROM_EMAIL;
+    const relayReady = process.env.MAIL_RELAY_URL && process.env.MAIL_RELAY_TOKEN;
+    const smtpReady = process.env.EMAIL_USER && process.env.EMAIL_APP_PASSWORD;
+    if (!brevoReady && !relayReady && !smtpReady) {
+      warnings.push('هیچ سرویس ایمیلی تنظیم نشده (BREVO_API_KEY و MAIL_FROM_EMAIL، یا MAIL_RELAY_URL و MAIL_RELAY_TOKEN، یا EMAIL_USER و EMAIL_APP_PASSWORD)؛ ورود و ثبت‌نام کار نمی‌کند چون کد تأیید با ایمیل می‌رود.');
+    } else if (process.env.MAIL_RELAY_URL && !process.env.MAIL_RELAY_TOKEN) {
+      warnings.push('MAIL_RELAY_URL هست ولی MAIL_RELAY_TOKEN تنظیم نشده؛ ایمیل‌ها ارسال نمی‌شوند.');
+    } else if (process.env.BREVO_API_KEY && !process.env.MAIL_FROM_EMAIL) {
+      warnings.push('BREVO_API_KEY هست ولی MAIL_FROM_EMAIL تنظیم نشده؛ ایمیل‌ها ارسال نمی‌شوند (باید یک فرستنده‌ی تأییدشده در Brevo باشد).');
+    }
   }
 
   const adminCode = process.env.ADMIN_SETUP_CODE;
@@ -40,19 +76,10 @@ function checkEnv() {
 
   const sameSite = String(process.env.COOKIE_SAMESITE || 'lax').toLowerCase();
   if (isProd) {
-    // دامنه‌هایی مثل onrender.com در فهرست Public Suffix هستند؛ دو زیردامنه‌ی آن‌ها «دو سایت جدا» حساب می‌شوند
-    const PUBLIC_SUFFIXES = ['onrender.com', 'vercel.app', 'netlify.app', 'pages.dev', 'github.io', 'herokuapp.com', 'up.railway.app', 'fly.dev', 'web.app', 'firebaseapp.com'];
-    const site = (u) => {
-      try {
-        const host = new URL(u).hostname;
-        const suffix = PUBLIC_SUFFIXES.find((s) => host === s || host.endsWith('.' + s));
-        if (suffix) return host.split('.').slice(-(suffix.split('.').length + 1)).join('.');
-        return host.split('.').slice(-2).join('.');
-      } catch (_) { return ''; }
-    };
     const client = String(process.env.CLIENT_ORIGIN || '').split(',')[0].trim();
-    if (site(client) && site(process.env.BACKEND_URL) && site(client) !== site(process.env.BACKEND_URL) && sameSite !== 'none') {
-      errors.push('فرانت و بک‌اند روی دو دامنه‌ی جدا هستند؛ کوکی ورود کار نمی‌کند. بهتر است هر دو زیردامنه‌ی یک دامنه باشند (مثل app.example.ir و api.example.ir)، وگرنه COOKIE_SAMESITE=none بگذارید.');
+    if (client && process.env.BACKEND_URL && registrableDomain(client) !== registrableDomain(process.env.BACKEND_URL) && sameSite !== 'none') {
+      // خطا نیست چون با «بازنویسی /api در Static Site» (فرانت و API هم‌مبدأ دیده می‌شوند) همه‌چیز درست کار می‌کند
+      warnings.push('فرانت و بک‌اند «دو سایت جدا» حساب می‌شوند. اگر مرورگر مستقیم به بک‌اند درخواست می‌زند، کوکی ورود ذخیره نمی‌شود. یا /api را روی Static Site به بک‌اند Rewrite کنید (VITE_API_URL=/)، یا از دامنه‌ی شخصی با دو زیردامنه استفاده کنید، یا COOKIE_SAMESITE=none بگذارید (در Safari/iPhone کار نمی‌کند).');
     }
   }
 
@@ -65,3 +92,4 @@ function checkEnv() {
 }
 
 module.exports = checkEnv;
+module.exports.registrableDomain = registrableDomain;

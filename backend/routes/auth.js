@@ -13,12 +13,13 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const OTP_TTL_MINUTES = 5;
 const OTP_MAX_ATTEMPTS = 5;          // بعد از ۵ حدس اشتباه، کد باطل می‌شود
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+const RESET_TTL_MINUTES = 10;
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 128;
 
 // کد تأیید هیچ‌وقت به‌صورت متن ساده در دیتابیس نمی‌ماند
-function hashOtp(code) {
-  return crypto.createHmac('sha256', process.env.JWT_SECRET || '').update(`otp:${code}`).digest('hex');
+function hashOtp(code, kind = 'otp') {
+  return crypto.createHmac('sha256', process.env.JWT_SECRET || '').update(`${kind}:${code}`).digest('hex');
 }
 
 function safeEqual(a, b) {
@@ -95,8 +96,8 @@ router.post('/register', async (req, res) => {
     } else {
       try {
         await pool.query(
-          `INSERT INTO users (name, email, password_hash, email_verified, otp_code, otp_expires_at, otp_attempts)
-           VALUES ($1, $2, $3, false, $4, $5, 0)
+          `INSERT INTO users (name, email, password_hash, role, email_verified, otp_code, otp_expires_at, otp_attempts)
+           VALUES ($1, $2, $3, 'reader', false, $4, $5, 0)
            RETURNING id, name, email, role`,
           [name.trim(), normalizedEmail, passwordHash, hashOtp(code), expiresAt]
         );
@@ -249,6 +250,105 @@ router.post('/resend-otp', async (req, res) => {
   }
 });
 
+// POST /api/auth/forgot-password  { email }
+// پاسخ همیشه یکسان است تا کسی نتواند بفهمد چه ایمیل‌هایی در سایت حساب دارند.
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (typeof email !== 'string' || !email || email.length > 200) {
+      return res.status(400).json({ error: 'ایمیل را وارد کنید.' });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const result = await pool.query('SELECT * FROM users WHERE LOWER(email) = $1', [normalizedEmail]);
+    const user = result.rows[0];
+
+    if (user && !user.is_blocked) {
+      const issuedAt = user.reset_expires_at ? new Date(user.reset_expires_at).getTime() - RESET_TTL_MINUTES * 60 * 1000 : 0;
+      if (Date.now() - issuedAt >= OTP_RESEND_COOLDOWN_MS) {
+        const code = generateOtpCode();
+        const expiresAt = new Date(Date.now() + RESET_TTL_MINUTES * 60 * 1000);
+        await pool.query(
+          'UPDATE users SET reset_code = $1, reset_expires_at = $2, reset_attempts = 0 WHERE id = $3',
+          [hashOtp(code, 'reset'), expiresAt, user.id]
+        );
+        try {
+          await sendOtpEmail(user.email, code, 'reset');
+        } catch (mailErr) {
+          // برای اینکه وجود یا نبود حساب لو نرود، خطا فقط در لاگ ثبت می‌شود
+          console.error('خطا در ارسال ایمیل بازیابی رمز:', mailErr);
+        }
+      }
+    }
+    res.json({ sent: true });
+  } catch (err) {
+    console.error('خطا در درخواست بازیابی رمز:', err);
+    res.status(500).json({ error: 'مشکلی در سرور پیش آمد.' });
+  }
+});
+
+// POST /api/auth/reset-password  { email, code, newPassword }
+// کد بازیابی فقط یک‌بار قابل استفاده است. بعد از تغییر موفق، همه‌ی نشست‌های قبلی باطل می‌شوند
+// و کاربر باید با رمز جدید (و کد ورود ایمیلی) دوباره وارد شود.
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, code, newPassword } = req.body;
+    if (typeof email !== 'string' || !email || !code) {
+      return res.status(400).json({ error: 'ایمیل و کد بازیابی را وارد کنید.' });
+    }
+    const pwError = passwordError(newPassword);
+    if (pwError) return res.status(400).json({ error: pwError });
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const result = await pool.query('SELECT * FROM users WHERE LOWER(email) = $1', [normalizedEmail]);
+    const user = result.rows[0];
+
+    if (!user || !user.reset_code || !user.reset_expires_at) {
+      return res.status(400).json({ error: 'ابتدا باید درخواست کد بازیابی بدهید.' });
+    }
+    if (user.is_blocked) {
+      return res.status(403).json({ error: 'حساب کاربری شما مسدود شده است.' });
+    }
+    if (new Date(user.reset_expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: 'کد بازیابی منقضی شده است. دوباره درخواست بدهید.' });
+    }
+
+    const attempt = await pool.query(
+      'UPDATE users SET reset_attempts = reset_attempts + 1 WHERE id = $1 RETURNING reset_attempts',
+      [user.id]
+    );
+    if (attempt.rows[0].reset_attempts > OTP_MAX_ATTEMPTS) {
+      await pool.query('UPDATE users SET reset_code = NULL, reset_expires_at = NULL WHERE id = $1', [user.id]);
+      return res.status(429).json({ error: 'تعداد تلاش‌های اشتباه زیاد بود. دوباره درخواست کد بدهید.' });
+    }
+
+    if (!safeEqual(user.reset_code, hashOtp(String(code).trim(), 'reset'))) {
+      return res.status(400).json({ error: 'کد بازیابی اشتباه است.' });
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+    // شرط reset_code = $3: اگر دو درخواست هم‌زمان با همان کد بیایند فقط یکی موفق می‌شود
+    const updated = await pool.query(
+      `UPDATE users
+          SET password_hash = $1, password_changed_at = now(),
+              reset_code = NULL, reset_expires_at = NULL, reset_attempts = 0,
+              otp_code = NULL, otp_expires_at = NULL, otp_attempts = 0,
+              email_verified = true
+        WHERE id = $2 AND reset_code = $3`,
+      [passwordHash, user.id, user.reset_code]
+    );
+    if (updated.rowCount === 0) {
+      return res.status(400).json({ error: 'این کد قبلاً استفاده شده است. دوباره درخواست بدهید.' });
+    }
+
+    clearSessionCookie(res);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('خطا در بازیابی رمز:', err);
+    res.status(500).json({ error: 'مشکلی در سرور پیش آمد.' });
+  }
+});
+
 // POST /api/auth/admin-setup  (ساخت اولین حساب ادمین؛ فقط با کد مخفی ADMIN_SETUP_CODE)
 router.post('/admin-setup', async (req, res) => {
   try {
@@ -273,7 +373,7 @@ router.post('/admin-setup', async (req, res) => {
 
     if (existing.rows.length > 0) {
       // اگر این ایمیل قبلاً به‌عنوان کاربر عادی ثبت شده بود، نقشش را به ادمین ارتقا بده
-      await pool.query('UPDATE users SET role = $1, password_hash = $2, name = $3 WHERE id = $4', ['admin', passwordHash, name.trim(), existing.rows[0].id]);
+      await pool.query('UPDATE users SET role = $1, password_hash = $2, name = $3, password_changed_at = now() WHERE id = $4', ['admin', passwordHash, name.trim(), existing.rows[0].id]);
     } else {
       await pool.query(
         `INSERT INTO users (name, email, password_hash, role) VALUES ($1, $2, $3, 'admin')`,

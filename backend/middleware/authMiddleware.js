@@ -14,7 +14,7 @@ async function requireAuth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
-    const result = await pool.query('SELECT id, name, email, role, is_blocked FROM users WHERE id = $1', [payload.userId]);
+    const result = await pool.query('SELECT id, name, email, role, is_blocked, password_changed_at FROM users WHERE id = $1', [payload.userId]);
     const user = result.rows[0];
 
     if (!user) {
@@ -22,6 +22,11 @@ async function requireAuth(req, res, next) {
     }
     if (user.is_blocked) {
       return res.status(403).json({ error: 'حساب کاربری شما مسدود شده است.' });
+    }
+
+    // بعد از تغییر یا بازیابی رمز، توکن‌هایی که قبل از آن صادر شده‌اند دیگر معتبر نیستند
+    if (user.password_changed_at && payload.iat < Math.floor(new Date(user.password_changed_at).getTime() / 1000)) {
+      return res.status(401).json({ error: 'رمز عبور شما تغییر کرده است. دوباره وارد شوید.' });
     }
 
     req.user = { id: user.id, email: user.email, name: user.name, role: user.role };

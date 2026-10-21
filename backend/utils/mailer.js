@@ -9,9 +9,6 @@ function getTransporter() {
     }
     transporter = nodemailer.createTransport({
       service: 'gmail',
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 15000,
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_APP_PASSWORD,
@@ -21,32 +18,78 @@ function getTransporter() {
   return transporter;
 }
 
+// ---------------------------------------------------------------------------
+// ارسال ایمیل
+//  - اگر BREVO_API_KEY تنظیم باشد: از API وب Brevo استفاده می‌شود (روی Render رایگان درگاه SMTP بسته است، ولی HTTPS باز است).
+//  - وگرنه اگر MAIL_RELAY_URL تنظیم باشد: از یک «رله‌ی ایمیل» روی Google Apps Script استفاده می‌شود
+//    (ایمیل از خود حساب جیمیل شما می‌رود؛ برای کاربرانی که به Brevo دسترسی ندارند. فایل mail-relay/Code.gs).
+//  - وگرنه: SMTP جیمیل با EMAIL_USER و EMAIL_APP_PASSWORD (برای اجرای محلی).
+// ---------------------------------------------------------------------------
+function fromAddress() {
+  return {
+    email: process.env.MAIL_FROM_EMAIL || process.env.EMAIL_USER || '',
+    name: process.env.MAIL_FROM_NAME || 'آنکت‌نویس',
+  };
+}
 
-// روی پلن رایگان Render پورت‌های SMTP (۲۵، ۴۶۵، ۵۸۷) بسته است و Gmail کار نمی‌کند.
-// اگر BREVO_API_KEY تنظیم باشد ایمیل از طریق API وب (HTTPS) فرستاده می‌شود؛ وگرنه همان SMTP قبلی.
-// فرستنده (EMAIL_FROM یا EMAIL_USER) باید در پنل Brevo به‌عنوان Sender تأیید شده باشد.
 async function sendViaBrevo({ to, subject, text, html }) {
-  const senderEmail = process.env.EMAIL_FROM || process.env.EMAIL_USER;
-  const recipients = String(to).split(',').map((e) => ({ email: e.trim() })).filter((r) => r.email);
+  const from = fromAddress();
+  if (!from.email) throw new Error('MAIL_FROM_EMAIL تنظیم نشده است (باید یک فرستنده‌ی تأییدشده در Brevo باشد).');
   const res = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
     headers: { 'api-key': process.env.BREVO_API_KEY, 'content-type': 'application/json', accept: 'application/json' },
-    body: JSON.stringify({ sender: { name: 'آنکت‌نویس', email: senderEmail }, to: recipients, subject, textContent: text, htmlContent: html }),
+    body: JSON.stringify({
+      sender: { name: from.name, email: from.email },
+      to: to.map((email) => ({ email })),
+      subject,
+      htmlContent: html,
+      textContent: text,
+    }),
     signal: AbortSignal.timeout(15000),
   });
-  if (!res.ok) throw new Error(`Brevo API ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.json()).message || ''; } catch (_) { /* بدنه JSON نبود */ }
+    throw new Error(`Brevo API ${res.status}${detail ? `: ${detail}` : ''}`);
+  }
 }
 
-async function deliver(mail) {
-  if (process.env.BREVO_API_KEY) return sendViaBrevo(mail);
-  return getTransporter().sendMail(mail);
+// رله‌ی Google Apps Script: یک آدرس HTTPS که با توکن مخفی ایمیل می‌فرستد (از حساب جیمیل صاحب اسکریپت)
+async function sendViaRelay({ to, subject, text, html }) {
+  if (!process.env.MAIL_RELAY_TOKEN) throw new Error('MAIL_RELAY_TOKEN تنظیم نشده است.');
+  const res = await fetch(process.env.MAIL_RELAY_URL, {
+    method: 'POST',
+    redirect: 'follow', // Apps Script پاسخ را بعد از یک ریدایرکت برمی‌گرداند
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      token: process.env.MAIL_RELAY_TOKEN,
+      to: to.join(','),
+      subject,
+      text,
+      html,
+      name: fromAddress().name,
+    }),
+    signal: AbortSignal.timeout(20000),
+  });
+  let data = null;
+  try { data = await res.json(); } catch (_) { /* پاسخ JSON نبود */ }
+  if (!res.ok || !data || data.ok !== true) {
+    throw new Error(`رله‌ی ایمیل ناموفق بود (${res.status})${data && data.error ? `: ${data.error}` : ''}`);
+  }
+}
+
+async function deliver({ to, subject, text, html }) {
+  const recipients = (Array.isArray(to) ? to : [to]).filter(Boolean);
+  if (recipients.length === 0) return;
+  if (process.env.BREVO_API_KEY) return sendViaBrevo({ to: recipients, subject, text, html });
+  if (process.env.MAIL_RELAY_URL) return sendViaRelay({ to: recipients, subject, text, html });
+  const from = fromAddress();
+  return getTransporter().sendMail({ from: `"${from.name}" <${from.email}>`, to: recipients.join(','), subject, text, html });
 }
 
 async function sendOtpEmail(toEmail, code, purpose = 'login') {
-  const isRegister = purpose === 'register';
-  const title = isRegister ? 'کد تأیید ایمیل' : 'کد ورود';
+  const title = purpose === 'register' ? 'کد تأیید ایمیل' : purpose === 'reset' ? 'کد بازیابی رمز عبور' : 'کد ورود';
   const mailOptions = {
-    from: `"آنکت‌نویس" <${process.env.EMAIL_USER}>`,
     to: toEmail,
     subject: `${title} شما: ${code}`,
     text: `${title} شما در آنکت‌نویس: ${code}\nاین کد تا ۵ دقیقه دیگر معتبر است.`,
@@ -88,13 +131,7 @@ async function sendPrintOrderEmail(toEmails, order, buyer) {
       </table>
     </div>`;
 
-  await deliver({
-    from: `"آنکت‌نویس" <${process.env.EMAIL_USER}>`,
-    to: toEmails.join(','),
-    subject: `سفارش چاپی جدید: ${order.item_title}`,
-    text,
-    html,
-  });
+  await deliver({ to: toEmails, subject: `سفارش چاپی جدید: ${order.item_title}`, text, html });
 }
 
 module.exports = { sendOtpEmail, sendPrintOrderEmail };

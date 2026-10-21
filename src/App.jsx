@@ -29,7 +29,14 @@ function Logo({ size = 40, className = "" }) {
 // اگر بک‌اند را جای دیگری دیپلوی کردید، یک فایل .env در ریشه‌ی فرانت‌اند بسازید و
 // VITE_API_URL=https://your-backend-domain را در آن بگذارید.
 // ---------------------------------------------------------------------------
-const API_BASE_URL = import.meta.env?.VITE_API_URL || 'http://localhost:4000';
+// اگر کسی به‌اشتباه VITE_API_URL را با /api یا اسلش آخر بنویسد (https://x.onrender.com/api) خودکار اصلاح می‌شود،
+// چون همه‌ی مسیرها خودشان با /api شروع می‌شوند.
+// VITE_API_URL = «/» (یا خالی) یعنی API هم‌مبدأ با سایت است (Static Site با Rewrite مسیر /api به بک‌اند).
+// اگر اصلاً تنظیم نشده باشد (اجرای محلی) به http://localhost:4000 وصل می‌شود.
+const RAW_API_URL = import.meta.env?.VITE_API_URL;
+const API_BASE_URL = (RAW_API_URL === undefined ? 'http://localhost:4000' : RAW_API_URL).replace(/\/+$/, '').replace(/\/api$/, '');
+// آدرس پخش PDF و صوت؛ می‌تواند مستقیم به بک‌اند باشد (لینک امضاشده است و کوکی لازم ندارد) تا فایل‌های بزرگ از پروکسی Rewrite رد نشوند.
+const FILES_BASE_URL = (import.meta.env?.VITE_FILES_URL || API_BASE_URL).replace(/\/+$/, '').replace(/\/api$/, '');
 // نشست واقعی داخل کوکی httpOnly است و جاوااسکریپت به آن دسترسی ندارد (امن در برابر XSS).
 // نسخه‌ی قدیمی سایت توکن را در localStorage می‌گذاشت؛ این کلید فقط برای پاک‌کردن آن است.
 const LEGACY_TOKEN_KEY = 'anketnevis_token';
@@ -165,6 +172,10 @@ export default function App() {
   const [otpEmail, setOtpEmail] = useState("");
   const [otpResending, setOtpResending] = useState(false);
   const [otpMessage, setOtpMessage] = useState("");
+  // فراموشی رمز عبور
+  const [resetCode, setResetCode] = useState("");
+  const [resetPassword, setResetPassword] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
 
   // وقتی صفحه لود می‌شه، اگه توکن ذخیره‌شده‌ای هست، نشست کاربر رو بازیابی کن
   useEffect(() => {
@@ -360,6 +371,7 @@ export default function App() {
 
   const openAuth = (mode) => {
     setAuthError("");
+    setAuthNotice("");
     setAuthMode(mode);
     setAuthStep('credentials');
     setOtpCode("");
@@ -547,6 +559,67 @@ export default function App() {
       setAuthError(err.message || "ارسال دوباره‌ی کد ناموفق بود.");
     } finally {
       setOtpResending(false);
+    }
+  };
+
+  // ----- فراموشی رمز عبور: ایمیل ← کد بازیابی ← رمز جدید ← ورود -----
+  const goForgot = () => {
+    setAuthError("");
+    setAuthNotice("");
+    setAuthStep('forgot');
+  };
+
+  const requestResetCode = () =>
+    apiRequest('/api/auth/forgot-password', { method: 'POST', body: { email: authEmail.trim() } });
+
+  const handleForgot = async (e) => {
+    e.preventDefault();
+    setAuthError("");
+    setAuthLoading(true);
+    try {
+      await requestResetCode();
+      setResetCode("");
+      setResetPassword("");
+      setOtpMessage(`اگر حسابی با ${authEmail.trim()} وجود داشته باشد، کد بازیابی به آن ایمیل ارسال شد.`);
+      setAuthStep('reset');
+    } catch (err) {
+      setAuthError(err.message || "ارسال کد بازیابی ناموفق بود.");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleResendReset = async () => {
+    setAuthError("");
+    setOtpResending(true);
+    try {
+      await requestResetCode();
+      setOtpMessage(`اگر حسابی وجود داشته باشد، کد جدیدی به ${authEmail.trim()} ارسال شد.`);
+    } catch (err) {
+      setAuthError(err.message || "ارسال دوباره‌ی کد ناموفق بود.");
+    } finally {
+      setOtpResending(false);
+    }
+  };
+
+  const handleReset = async (e) => {
+    e.preventDefault();
+    setAuthError("");
+    setAuthLoading(true);
+    try {
+      await apiRequest('/api/auth/reset-password', {
+        method: 'POST',
+        body: { email: authEmail.trim(), code: resetCode.trim(), newPassword: resetPassword },
+      });
+      setAuthPassword("");
+      setResetCode("");
+      setResetPassword("");
+      setAuthNotice("رمز عبور شما تغییر کرد. حالا با رمز جدید وارد شوید.");
+      setAuthStep('credentials');
+    } catch (err) {
+      setAuthError(err.message || "تغییر رمز عبور ناموفق بود.");
+    } finally {
+      setAuthLoading(false);
     }
   };
 
@@ -1803,7 +1876,7 @@ export default function App() {
                           controlsList="nodownload"
                           onContextMenu={(e) => e.preventDefault()}
                           className="w-full"
-                          src={fileUrls.audio ? `${API_BASE_URL}${fileUrls.audio}` : undefined}
+                          src={fileUrls.audio ? `${FILES_BASE_URL}${fileUrls.audio}` : undefined}
                           onError={() => { if (Date.now() - fileUrlsFetchedAt.current > 10000) loadFileUrls(); }}
                         >
                           مرورگر شما از پخش صوت پشتیبانی نمی‌کند.
@@ -1838,7 +1911,7 @@ export default function App() {
               ) : (
                 <iframe
                   title="پیش‌نمایش PDF"
-                  src={fileUrls.pdf ? `${API_BASE_URL}${fileUrls.pdf}` : undefined}
+                  src={fileUrls.pdf ? `${FILES_BASE_URL}${fileUrls.pdf}` : undefined}
                   className={`w-full rounded-2xl border ${darkMode ? 'border-stone-800' : 'border-stone-200'}`}
                   style={{ height: '70vh' }}
                 />
@@ -2235,12 +2308,20 @@ export default function App() {
               <h3 className="text-2xl font-black mb-1">
                 {authMode === 'login' && authStep === 'otp'
                   ? 'کد تأیید رو وارد کنید'
-                  : authMode === 'login' ? 'ورود به حساب کاربری' : 'ایجاد حساب کاربری'}
+                  : authMode === 'login' && authStep === 'forgot'
+                    ? 'بازیابی رمز عبور'
+                    : authMode === 'login' && authStep === 'reset'
+                      ? 'تعیین رمز عبور جدید'
+                      : authMode === 'login' ? 'ورود به حساب کاربری' : 'ایجاد حساب کاربری'}
               </h3>
               <p className="text-xs text-stone-400">
                 {authMode === 'login' && authStep === 'otp'
                   ? otpMessage
-                  : authMode === 'login' ? 'برای دسترسی به کتاب‌ها و پنل وارد شوید' : 'به جامعه نویسندگان و خوانندگان آنکت‌نویس بپیوندید'}
+                  : authMode === 'login' && authStep === 'forgot'
+                    ? 'ایمیل حساب خود را وارد کنید تا کد بازیابی برایتان ارسال شود'
+                    : authMode === 'login' && authStep === 'reset'
+                      ? otpMessage
+                      : authMode === 'login' ? 'برای دسترسی به کتاب‌ها و پنل وارد شوید' : 'به جامعه نویسندگان و خوانندگان آنکت‌نویس بپیوندید'}
               </p>
             </div>
 
@@ -2288,6 +2369,107 @@ export default function App() {
                   </button>
                 </div>
               </form>
+            ) : authMode === 'login' && authStep === 'forgot' ? (
+              <form onSubmit={handleForgot} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold mb-1">ایمیل حساب</label>
+                  <div className="relative">
+                    <input
+                      type="email"
+                      placeholder="example@gmail.com"
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                      className={`${inputCls} pr-10`}
+                      required
+                      autoFocus
+                    />
+                    <Mail className="w-4 h-4 absolute right-3.5 top-3.5 text-stone-400" />
+                  </div>
+                </div>
+
+                {authError && (
+                  <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 px-3 py-2 rounded-lg">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{authError}</span>
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={authLoading}
+                  className="w-full py-3 brand-bg text-white rounded-xl font-bold hover:opacity-90 transition mt-2 flex items-center justify-center gap-2 disabled:opacity-70"
+                >
+                  {authLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+                  ارسال کد بازیابی
+                </button>
+
+                <div className="text-xs pt-2">
+                  <button type="button" onClick={() => { setAuthError(""); setAuthStep('credentials'); }} className="text-stone-400 hover:underline">
+                    بازگشت به ورود
+                  </button>
+                </div>
+              </form>
+            ) : authMode === 'login' && authStep === 'reset' ? (
+              <form onSubmit={handleReset} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold mb-1">کد شش‌رقمی بازیابی</label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="------"
+                      value={resetCode}
+                      onChange={(e) => setResetCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      className={`${inputCls} pr-10 text-center tracking-[0.5em] text-lg font-bold`}
+                      required
+                      autoFocus
+                    />
+                    <KeyRound className="w-4 h-4 absolute right-3.5 top-3.5 text-stone-400" />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold mb-1">رمز عبور جدید</label>
+                  <div className="relative">
+                    <input
+                      type="password"
+                      placeholder="••••••••"
+                      value={resetPassword}
+                      onChange={(e) => setResetPassword(e.target.value)}
+                      minLength={8}
+                      className={`${inputCls} pr-10`}
+                      required
+                    />
+                    <Lock className="w-4 h-4 absolute right-3.5 top-3.5 text-stone-400" />
+                  </div>
+                  <p className="text-[11px] text-stone-500 mt-1">حداقل ۸ کاراکتر</p>
+                </div>
+
+                {authError && (
+                  <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 px-3 py-2 rounded-lg">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{authError}</span>
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={authLoading}
+                  className="w-full py-3 brand-bg text-white rounded-xl font-bold hover:opacity-90 transition mt-2 flex items-center justify-center gap-2 disabled:opacity-70"
+                >
+                  {authLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+                  تغییر رمز عبور
+                </button>
+
+                <div className="flex items-center justify-between text-xs pt-2">
+                  <button type="button" onClick={() => { setAuthError(""); setAuthStep('forgot'); }} className="text-stone-400 hover:underline">
+                    تغییر ایمیل
+                  </button>
+                  <button type="button" onClick={handleResendReset} disabled={otpResending} className="brand-text font-bold hover:underline disabled:opacity-60">
+                    {otpResending ? 'در حال ارسال...' : 'ارسال دوباره‌ی کد'}
+                  </button>
+                </div>
+              </form>
             ) : (
             <form onSubmit={authMode === 'login' ? handleLogin : handleRegister} className="space-y-4">
               {authMode === 'register' && (
@@ -2330,13 +2512,33 @@ export default function App() {
                     placeholder="••••••••"
                     value={authPassword}
                     onChange={(e) => setAuthPassword(e.target.value)}
-                    minLength={4}
+                    minLength={8}
                     className={`w-full py-3 pr-10 pl-3 rounded-xl border outline-none text-sm ${darkMode ? 'bg-stone-950 border-stone-800 focus:border-rose-600' : 'bg-stone-50 border-stone-300'}`}
                     required
                   />
                   <Lock className="w-4 h-4 absolute right-3.5 top-3.5 text-stone-400" />
                 </div>
+                {authMode === 'register' && (
+                  <p className="text-[11px] text-stone-500 mt-1 leading-5">
+                    حداقل ۸ کاراکتر. حساب جدید به‌عنوان «خواننده» ساخته می‌شود؛ نویسنده شدن فقط با تأیید مدیریت سایت ممکن است.
+                  </p>
+                )}
               </div>
+
+              {authMode === 'login' && (
+                <div className="-mt-2">
+                  <button type="button" onClick={goForgot} className="text-xs brand-text font-bold hover:underline">
+                    رمز عبورم را فراموش کرده‌ام
+                  </button>
+                </div>
+              )}
+
+              {authNotice && authMode === 'login' && (
+                <div className="flex items-center gap-2 text-xs text-emerald-500 bg-emerald-500/10 px-3 py-2 rounded-lg">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>{authNotice}</span>
+                </div>
+              )}
 
               {authError && (
                 <div className="flex items-center gap-2 text-xs text-red-500 bg-red-500/10 px-3 py-2 rounded-lg">
@@ -2356,7 +2558,7 @@ export default function App() {
             </form>
             )}
 
-            {!(authMode === 'login' && authStep === 'otp') && (
+            {!(authMode === 'login' && authStep !== 'credentials') && (
               <div className="text-center mt-6 pt-4 border-t border-stone-800 text-xs">
                 {authMode === 'login' ? (
                   <p className="text-stone-400">

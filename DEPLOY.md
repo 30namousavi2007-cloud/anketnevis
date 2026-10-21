@@ -1,3 +1,5 @@
+> **اگر روی Render رایگان هستید فایل `RENDER-SETUP.md` را دنبال کنید.** (دیسک دائمی و SMTP رایگان نیست؛ آن راهنما با Supabase Storage و Brevo کار می‌کند.)
+
 # راهنمای راه‌اندازی و دیپلوی آنکت‌نویس
 
 ## ۱) اجرا و تست محلی (پرداخت آزمایشی)
@@ -20,6 +22,25 @@
 - فرانت: `https://app.example.ir` و بک‌اند: `https://api.example.ir`
 
 اگر دو دامنه‌ی کاملاً جدا دارید `COOKIE_SAMESITE=none` بگذارید، ولی بعضی مرورگرها کوکی شخص ثالث را مسدود می‌کنند و ورود ممکن است کار نکند. بک‌اند در production اگر این وضعیت را ببیند روشن می‌شود و هشدار می‌دهد.
+
+## راهنمای مخصوص Render (بک‌اند) + Vercel (فرانت) + Supabase (دیتابیس)
+
+**متغیرهای Vercel** (Settings ← Environment Variables، بعد از تغییر دوباره Deploy کنید):
+- `VITE_API_URL` = `https://anketnevis.onrender.com` (بدون `/api`؛ اگر اشتباهاً با `/api` بنویسید کد خودش اصلاحش می‌کند، ولی همان را درست بنویسید)
+
+**متغیرهای Render:**
+- `NODE_ENV=production`
+- `CLIENT_ORIGIN` = آدرس دقیق فرانت روی Vercel، با https و بدون `/` آخر (مثلاً `https://anketnevis.vercel.app`)
+- `BACKEND_URL=https://anketnevis.onrender.com`
+- `COOKIE_SAMESITE=none` (چون `vercel.app` و `onrender.com` دو سایت جدا هستند؛ بدون آن ورود کار نمی‌کند)
+- `DATABASE_URL` (آدرس Pooler سوپابیس)، `JWT_SECRET`، `EMAIL_USER`، `EMAIL_APP_PASSWORD`، `ADMIN_SETUP_CODE`، `ZARINPAL_*`
+
+> بعضی مرورگرها (Safari، و کم‌کم Chrome) کوکی بین دو سایت جدا را مسدود می‌کنند. پایدارترین راه یک دامنه‌ی شخصی با دو زیردامنه است (`app.example.ir` برای فرانت و `api.example.ir` برای بک‌اند)؛ آن‌وقت `COOKIE_SAMESITE` را دست نزنید.
+
+**گواهی TLS سوپابیس:**
+1. در Supabase: Project Settings ← Database ← SSL Configuration، فایل گواهی ریشه (`.crt`) را دانلود کنید.
+2. محتوای فایل را (با خطوط `-----BEGIN CERTIFICATE-----`) در Render به‌عنوان `DB_SSL_CA` بگذارید؛ خطوط جدید را می‌توانید با `\n` بنویسید.
+3. اگر هنوز این کار را نکرده‌اید و سرور خطای «self-signed certificate» داد: موقتاً `DB_SSL_REJECT_UNAUTHORIZED=false` بگذارید (کم‌امن‌تر است، چون هویت سرور دیتابیس راستی‌آزمایی نمی‌شود). در لاگ شروع سرور پیام «اتصال به دیتابیس برقرار است» یا دلیل خطا را می‌بینید.
 
 ## ۴) دیپلوی بک‌اند (Railway، Render، VPS، یا Docker)
 یک `Dockerfile` آماده در `backend` هست. متغیرها را در تنظیمات سرویس بگذارید (نه در گیت):

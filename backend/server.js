@@ -50,6 +50,10 @@ app.use('/api/auth/verify-otp', rateLimit({ windowMs: 15 * MIN, max: 15, message
 app.use('/api/auth/verify-otp', rateLimit({ windowMs: 15 * MIN, max: 10, keyFn: emailKey('otp'), message: tooMany }));
 app.use('/api/auth/resend-otp', rateLimit({ windowMs: 15 * MIN, max: 5, message: tooMany }));
 app.use('/api/auth/resend-otp', rateLimit({ windowMs: 15 * MIN, max: 5, keyFn: emailKey('resend'), message: tooMany }));
+app.use('/api/auth/forgot-password', rateLimit({ windowMs: 15 * MIN, max: 5, message: tooMany }));
+app.use('/api/auth/forgot-password', rateLimit({ windowMs: 15 * MIN, max: 3, keyFn: emailKey('forgot'), message: tooMany }));
+app.use('/api/auth/reset-password', rateLimit({ windowMs: 15 * MIN, max: 20, message: tooMany }));
+app.use('/api/auth/reset-password', rateLimit({ windowMs: 15 * MIN, max: 10, keyFn: emailKey('reset'), message: tooMany }));
 app.use('/api/auth/register', rateLimit({ windowMs: 60 * MIN, max: 10, message: tooMany }));
 app.use('/api/auth/admin-setup', rateLimit({ windowMs: 60 * MIN, max: 5, message: tooMany }));
 
@@ -60,7 +64,8 @@ app.post('/api/items/:id/files', rateLimit({ windowMs: 60 * MIN, max: 30, messag
 
 // بررسی سلامت سرور
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() });
+  // ip: آی‌پیِ کاربر از دید سرور؛ برای اطمینان از درست بودن TRUST_PROXY (باید با آی‌پی واقعی خودتان یکی باشد)
+  res.json({ status: 'ok', time: new Date().toISOString(), ip: req.ip });
 });
 
 app.use('/api/auth', authRoutes);
@@ -89,6 +94,17 @@ process.on('unhandledRejection', (reason) => {
 });
 
 if (require.main === module) {
+  // هنگام راه‌اندازی اتصال دیتابیس یک‌بار آزمایش می‌شود تا خطای گواهی TLS یا آدرس غلط همان لحظه در لاگ دیده شود
+  require('./db/pool')
+    .query('SELECT 1')
+    .then(() => console.log('✅ اتصال به دیتابیس برقرار است.'))
+    .catch((err) => {
+      console.error('❌ اتصال به دیتابیس برقرار نشد:', err.message);
+      if (/self[- ]signed|unable to verify|certificate/i.test(err.message)) {
+        console.error('   خطای گواهی TLS: گواهی ریشه‌ی دیتابیس را در DB_SSL_CA بگذارید، یا موقتاً DB_SSL_REJECT_UNAUTHORIZED=false تنظیم کنید.');
+      }
+    });
+
   app.listen(PORT, () => {
     console.log(`🚀 سرور آنکت‌نویس روی پورت ${PORT} اجرا شد`);
     console.log(`   http://localhost:${PORT}/api/health`);

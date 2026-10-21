@@ -114,3 +114,12 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS otp_attempts INTEGER NOT NULL DEFAULT
 -- تأیید ایمیل در ثبت‌نام: حساب‌های موجود تأییدشده فرض می‌شوند (ورودشان از قبل با کد ایمیلی بوده)
 -- ---------------------------------------------------------------------------
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT true;
+
+-- ---------------------------------------------------------------------------
+-- بازیابی رمز عبور: کد بازیابی جدا از کد ورود نگه داشته می‌شود تا یکی جای دیگری استفاده نشود.
+-- password_changed_at: بعد از تغییر رمز، نشست‌های قدیمی (توکن‌های صادرشده قبل از آن) باطل می‌شوند.
+-- ---------------------------------------------------------------------------
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_code VARCHAR(64);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_expires_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;

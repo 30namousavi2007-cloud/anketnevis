@@ -179,3 +179,13 @@ test('stripSslMode پارامتر sslmode را بدون آسیب به بقیه �
   assert.strictEqual(stripSslMode('postgres://u:p@h/db?x=1&sslmode=require'), 'postgres://u:p@h/db?x=1');
   assert.strictEqual(stripSslMode('postgres://u:p@h/db'), 'postgres://u:p@h/db');
 });
+
+test('registrableDomain: دامنه‌های onrender.com و vercel.app سایت‌های جدا حساب می‌شوند', () => {
+  const { registrableDomain } = require('../utils/checkEnv');
+  assert.notStrictEqual(registrableDomain('https://anketnevis-1.onrender.com'), registrableDomain('https://anketnevis.onrender.com'));
+  assert.strictEqual(registrableDomain('https://anketnevis.onrender.com'), 'anketnevis.onrender.com');
+  assert.notStrictEqual(registrableDomain('https://a.vercel.app'), registrableDomain('https://b.onrender.com'));
+  assert.strictEqual(registrableDomain('https://app.example.ir'), registrableDomain('https://api.example.ir'));
+  assert.strictEqual(registrableDomain('https://app.example.co.ir'), 'example.co.ir');
+  assert.strictEqual(registrableDomain('http://localhost:5173'), registrableDomain('http://localhost:4000'));
+});
