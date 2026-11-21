@@ -16,6 +16,8 @@ const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
 const RESET_TTL_MINUTES = 10;
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 128;
+// هش یک رمز تصادفی؛ فقط برای یکسان‌کردن زمان پاسخ ورود وقتی ایمیل در دیتابیس نیست
+const DUMMY_PASSWORD_HASH = '$2a$12$LDBjfGXL.jg8DrHZeZ0KD.y..PHMPDdoxvD77D8hN.gNWorYsu4iq';
 
 // کد تأیید هیچ‌وقت به‌صورت متن ساده در دیتابیس نمی‌ماند
 function hashOtp(code, kind = 'otp') {
@@ -136,16 +138,14 @@ router.post('/login', async (req, res) => {
     const result = await pool.query('SELECT * FROM users WHERE LOWER(email) = $1', [normalizedEmail]);
     const user = result.rows[0];
 
-    if (!user) {
+    // همیشه یک مقایسه‌ی bcrypt انجام می‌شود (حتی برای ایمیل ناشناس) تا زمان پاسخ وجود یا نبود حساب را لو ندهد.
+    const passwordMatches = await bcrypt.compare(password, user ? user.password_hash : DUMMY_PASSWORD_HASH);
+    if (!user || !passwordMatches) {
       return res.status(401).json({ error: 'ایمیل یا رمز عبور اشتباه است.' });
     }
+    // وضعیت مسدودی فقط بعد از درست بودن رمز گفته می‌شود تا برای ایمیل‌های دیگران قابل پرسش نباشد
     if (user.is_blocked) {
       return res.status(403).json({ error: 'حساب کاربری شما مسدود شده است.' });
-    }
-
-    const passwordMatches = await bcrypt.compare(password, user.password_hash);
-    if (!passwordMatches) {
-      return res.status(401).json({ error: 'ایمیل یا رمز عبور اشتباه است.' });
     }
 
     const code = generateOtpCode();

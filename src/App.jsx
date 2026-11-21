@@ -1014,7 +1014,7 @@ export default function App() {
                   type="password"
                   value={adminSetupPassword}
                   onChange={(e) => setAdminSetupPassword(e.target.value)}
-                  minLength={6}
+                  minLength={8}
                   className="w-full py-3 px-3 rounded-xl border border-stone-800 bg-stone-950 outline-none text-sm focus:border-rose-600"
                   required
                 />
@@ -1133,6 +1133,7 @@ export default function App() {
 
           <button
             onClick={() => setDarkMode(!darkMode)}
+            aria-label={darkMode ? 'تغییر به حالت روشن' : 'تغییر به حالت تیره'}
             className={`p-2.5 rounded-xl border transition ${darkMode ? 'border-stone-800 bg-stone-900 text-amber-400' : 'border-stone-300 bg-stone-100 text-stone-700'}`}
           >
             {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
@@ -1166,6 +1167,28 @@ export default function App() {
           )}
         </div>
       </header>
+
+      {/* منوی سریع موبایل: دکمه‌های پنل در هدر زیر عرض sm پنهان‌اند، پس برای کاربر واردشده اینجا هم هست */}
+      {currentUser && (
+        <nav aria-label="منوی سریع" className={`sm:hidden flex gap-2 px-4 py-2 border-b ${darkMode ? 'border-stone-900' : 'border-stone-200'}`}>
+          <button
+            onClick={openDashboard}
+            className={`flex-1 flex items-center justify-center gap-2 text-xs px-3 py-2.5 rounded-xl font-semibold border transition ${darkMode ? 'border-stone-800 bg-stone-900/80 text-stone-200' : 'border-stone-300 bg-stone-100 text-stone-700'}`}
+          >
+            <LayoutDashboard className="w-4 h-4 brand-text" />
+            <span>{currentUser.role !== 'author' && currentUser.role !== 'admin' ? 'پنل کاربری' : 'پنل نویسندگان'}</span>
+          </button>
+          {currentUser.role === 'admin' && (
+            <button
+              onClick={openAdminPanel}
+              className={`flex-1 flex items-center justify-center gap-2 text-xs px-3 py-2.5 rounded-xl font-semibold border transition ${darkMode ? 'border-stone-800 bg-stone-900/80 text-stone-200' : 'border-stone-300 bg-stone-100 text-stone-700'}`}
+            >
+              <Shield className="w-4 h-4 brand-text" />
+              <span>پنل مدیریت</span>
+            </button>
+          )}
+        </nav>
+      )}
 
       {/* صفحه‌ی «درباره ما» */}
       {showAboutPage ? (
@@ -2290,11 +2313,12 @@ export default function App() {
 
       {/* پاپ‌آپ ورود / ثبت‌نام */}
       {showAuthModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="ورود یا ثبت‌نام">
           <div className={`w-full max-w-md p-6 rounded-3xl border shadow-2xl relative ${darkMode ? 'bg-stone-900 border-stone-800 text-white' : 'bg-white border-stone-200 text-stone-800'}`}>
 
             <button
               onClick={() => setShowAuthModal(false)}
+              aria-label="بستن"
               className="absolute top-5 left-5 p-2 rounded-xl text-stone-400 hover:text-white hover:bg-stone-800 transition"
             >
               <X className="w-5 h-5" />

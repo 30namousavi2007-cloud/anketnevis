@@ -7,6 +7,12 @@ const router = express.Router();
 // همه‌ی مسیرهای این فایل فقط برای ادمین (رئیس نویسندگان) در دسترس‌اند
 router.use(requireAuth, requireAdmin);
 
+// شناسه‌ی کاربر باید عدد باشد؛ وگرنه PostgreSQL خطا می‌دهد و پاسخ ۵۰۰ می‌شود
+router.param('id', (req, res, next, id) => {
+  if (!/^\d{1,9}$/.test(id)) return res.status(404).json({ error: 'کاربر پیدا نشد.' });
+  next();
+});
+
 function serializeUser(row) {
   return {
     id: row.id,

@@ -5,10 +5,24 @@ const serializeItem = require('../utils/serializeItem');
 
 const router = express.Router();
 
+const BIO_MAX_LENGTH = 2000;
+
+// شناسه باید عدد باشد؛ وگرنه PostgreSQL خطا می‌دهد و پاسخ ۵۰۰ می‌شود
+router.param('id', (req, res, next, id) => {
+  if (!/^\d{1,9}$/.test(id)) return res.status(404).json({ error: 'نویسنده پیدا نشد.' });
+  next();
+});
+
 // PUT /api/authors/me  → ویرایش بیوگرافی خودِ نویسنده (باید قبل از ':id' بیاد)
 router.put('/me', requireAuth, requireAuthor, async (req, res) => {
   try {
     const { bio } = req.body;
+    if (bio != null && typeof bio !== 'string') {
+      return res.status(400).json({ error: 'بیوگرافی نامعتبر است.' });
+    }
+    if ((bio || '').trim().length > BIO_MAX_LENGTH) {
+      return res.status(400).json({ error: `بیوگرافی خیلی طولانی است (حداکثر ${BIO_MAX_LENGTH} کاراکتر).` });
+    }
     const result = await pool.query(
       'UPDATE users SET bio = $1 WHERE id = $2 RETURNING id, name, bio',
       [(bio || '').trim(), req.user.id]
